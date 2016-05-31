@@ -3,39 +3,96 @@ module PscIde.Server where
 import Prelude
 import Node.Buffer as Buffer
 import Data.Either (either)
+import Data.Foldable (for_)
 import Data.Maybe (Maybe(Just, Nothing), maybe)
 import Data.Traversable (for)
+import Data.Tuple (Tuple(..), fst, snd)
 import Node.Buffer (BUFFER)
 import Node.Encoding (Encoding(UTF8))
 import Node.FS (FS)
 import Node.Which (which)
 import Control.Alt ((<|>))
-import Control.Monad.Aff (attempt, Aff, later', makeAff)
-import Control.Monad.Aff.AVar (AVAR)
+import Control.Monad.Aff (attempt, Aff, later', makeAff, launchAff, forkAff)
+import Control.Monad.Aff.AVar (AVAR, makeVar, takeVar, putVar)
 import Control.Monad.Aff.Par (Par(Par), runPar)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE)
-import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(Normally), onClose, onError, defaultSpawnOptions, spawn, defaultExecOptions, execFile)
+import Control.Monad.Eff.Exception (error, message)
+import Control.Monad.Eff.Ref (REF, Ref, newRef, readRef, modifyRef)
+import Node.OS as No
+import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(Normally), onClose, onError, defaultSpawnOptions, spawn, defaultExecOptions, execFile, exec)
 import PscIde (NET, quit)
 
-data ServerStartResult =
-  Started ChildProcess
+data ServerStartResult
+  = Started ChildProcess
   | Closed
   | StartError String
 
--- | Start a psc-ide server instance
-startServer ∷ forall eff. String → Int -> Maybe String
-  → Aff (cp ∷ CHILD_PROCESS, console ∷ CONSOLE, avar ∷ AVAR | eff) ServerStartResult
-startServer exe port projectRoot = do
-    cp <- liftEff (spawn exe ["-p", show port] defaultSpawnOptions { cwd = projectRoot })
-    let handleErr = makeAff \_ succ -> do
-                      onError cp (\_ -> succ $ StartError "psc-ide-server error")
-                      onClose cp (\exit -> case exit of
-                                     (Normally 0) -> succ Closed
-                                     (Normally n) -> succ $ StartError $ "Error code returned: "++ show n
-                                     _ -> succ $ StartError "Other close error")
+data Attempt
+  = First
+  | NotStarted Int
+  | BothStarted Int
+  | WStarted Int
+  | UStarted Int
 
-    runPar (Par handleErr <|> Par (later' 100 $ pure $ Started cp))
+
+type StartingEffects e =
+  ( cp ∷ CHILD_PROCESS
+  , console ∷ CONSOLE
+  , avar ∷ AVAR
+  , ref ∷ REF
+  | e)
+
+-- | Start a psc-ide server instance
+startServer
+  ∷ ∀ eff
+  . String
+  → Int
+  → Maybe String
+  → Aff (StartingEffects eff) ServerStartResult
+startServer exe port projectRoot = do
+    startStatus ← liftEff $ newRef {w: Nothing, u: Nothing, c: Nothing}
+
+    forkAff do
+      wp ← liftEff $ spawn "cmd" ["/s", "/c", exe <> " -p " <> show port] $ defaultSpawnOptions {cwd = projectRoot}
+      liftEff do
+        onError wp $ const $ modifyRef startStatus _{w = Nothing}
+        onClose wp (\exit → modifyRef startStatus _{c = Just exit})
+        modifyRef startStatus _{w = Just wp}
+
+    forkAff do
+      up ← liftEff $ spawn exe ["-p", show port ] $ defaultSpawnOptions {cwd = projectRoot}
+      liftEff do
+        onError up $ const $ modifyRef startStatus _{u = Nothing}
+        onClose up (\exit → modifyRef startStatus _{c = Just exit})
+        modifyRef startStatus _{u = Just up}
+
+
+    checkIfOk startStatus $ NotStarted zero
+
+    where
+    checkIfOk ∷ Ref {w ∷ Maybe ChildProcess, u ∷ Maybe ChildProcess, c ∷ Maybe Exit} → Attempt → Aff (StartingEffects eff) ServerStartResult
+    checkIfOk ref attempts = do
+      {w, u, c} ← liftEff $ readRef ref
+      case c of
+        Just (Normally 0) → pure Closed
+        Just (Normally n) → pure $ StartError $ "Error code returned: " <> show n
+        Just _ → pure $ StartError "Other close error"
+        Nothing →
+          case w, u, attempts of
+            Nothing, Nothing, NotStarted n | n > 5 → pure $ StartError "Not started after 5 attempts"
+            Nothing, Nothing, NotStarted n → later' 300 $ checkIfOk ref $ NotStarted $ n + one
+            Just w', Just u', BothStarted n | n > 5 → pure $ StartError "Weird environment: both windows and unix processes are running"
+            Just w', Just u', BothStarted n → later' 300 $ checkIfOk ref $ BothStarted $ n + one
+            Just w', Just u', _ → checkIfOk ref $ BothStarted one
+            Just w', _, WStarted n | n > 5 → pure $ Started w'
+            Just w', _, WStarted n → later' 300 $ checkIfOk ref $ WStarted $ n + one
+            Just w', _, _ → checkIfOk ref $ WStarted one
+            _, Just u', UStarted n |n > 5 → pure $ Started u'
+            _, Just u', UStarted n → later' 300 $ checkIfOk ref $ UStarted $ n + one
+            _, Just u', _ → checkIfOk ref $ UStarted one
+
+
 
 -- | Stop a psc-ide server.
 stopServer :: forall eff. Int -> Aff (cp :: CHILD_PROCESS, net :: NET | eff) Unit
