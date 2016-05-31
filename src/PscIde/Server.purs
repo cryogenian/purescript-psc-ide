@@ -3,24 +3,19 @@ module PscIde.Server where
 import Prelude
 import Node.Buffer as Buffer
 import Data.Either (either)
-import Data.Foldable (for_)
 import Data.Maybe (Maybe(Just, Nothing), maybe)
 import Data.Traversable (for)
-import Data.Tuple (Tuple(..), fst, snd)
 import Node.Buffer (BUFFER)
 import Node.Encoding (Encoding(UTF8))
 import Node.FS (FS)
 import Node.Which (which)
 import Control.Alt ((<|>))
-import Control.Monad.Aff (attempt, Aff, later', makeAff, launchAff, forkAff)
-import Control.Monad.Aff.AVar (AVAR, makeVar, takeVar, putVar)
-import Control.Monad.Aff.Par (Par(Par), runPar)
+import Control.Monad.Aff (attempt, Aff, later', makeAff, forkAff)
+import Control.Monad.Aff.AVar (AVAR)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE)
-import Control.Monad.Eff.Exception (error, message)
 import Control.Monad.Eff.Ref (REF, Ref, newRef, readRef, modifyRef)
-import Node.OS as No
-import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(Normally), onClose, onError, defaultSpawnOptions, spawn, defaultExecOptions, execFile, exec)
+import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(Normally), onClose, onError, defaultSpawnOptions, spawn, defaultExecOptions, execFile)
 import PscIde (NET, quit)
 
 data ServerStartResult
@@ -29,8 +24,7 @@ data ServerStartResult
   | StartError String
 
 data Attempt
-  = First
-  | NotStarted Int
+  = NotStarted Int
   | BothStarted Int
   | WStarted Int
   | UStarted Int
@@ -43,7 +37,7 @@ type StartingEffects e =
   , ref ∷ REF
   | e)
 
--- | Start a psc-ide server instance
+-- | Start a psc-ide server instanc
 startServer
   ∷ ∀ eff
   . String
@@ -82,6 +76,7 @@ startServer exe port projectRoot = do
           case w, u, attempts of
             Nothing, Nothing, NotStarted n | n > 5 → pure $ StartError "Not started after 5 attempts"
             Nothing, Nothing, NotStarted n → later' 300 $ checkIfOk ref $ NotStarted $ n + one
+            Nothing, Nothing, _ → checkIfOk ref $ NotStarted zero
             Just w', Just u', BothStarted n | n > 5 → pure $ StartError "Weird environment: both windows and unix processes are running"
             Just w', Just u', BothStarted n → later' 300 $ checkIfOk ref $ BothStarted $ n + one
             Just w', Just u', _ → checkIfOk ref $ BothStarted one

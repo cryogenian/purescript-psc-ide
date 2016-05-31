@@ -18,7 +18,8 @@
     "purescript-maybe": "~0.3.5",
     "purescript-aff": "~0.16.0",
     "purescript-node-fs": "^0.11.0",
-    "purescript-node-child-process": "^0.6.1"
+    "purescript-node-child-process": "^0.6.1",
+    "purescript-refs": "^0.2.0"
   },
   "repository": {
     "type": "git",
