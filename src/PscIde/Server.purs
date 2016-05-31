@@ -37,7 +37,7 @@ type StartingEffects e =
   , ref ∷ REF
   | e)
 
--- | Start a psc-ide server instanc
+-- | Start a psc-ide server instance
 startServer
   ∷ ∀ eff
   . String
